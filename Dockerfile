@@ -1,7 +1,5 @@
-FROM node:10
-
-RUN npm install -g knx-mqtt-bridge
-ADD https://raw.githubusercontent.com/pakerfeldt/knx-mqtt-bridge/master/config.example.yaml /config/config.yaml
-ENV KNX_MQTT_CONFIG=/config/config.yaml
-VOLUME /config
-CMD knx-mqtt-bridge
+FROM node:18-alpine
+WORKDIR /usr/app
+COPY package.json .
+RUN npm install
+COPY . .

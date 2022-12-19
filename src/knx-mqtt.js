@@ -3,12 +3,10 @@
 
 const c = require('./constants.js');
 const knx = require('knx');
-const mqtt = require('mqtt');
 const { createLogger, format, transports } = require('winston');
 const ets = require('./ets-xml');
 const config = require('./config.js').parse();
-const topicPrefix = config.mqtt.topicPrefix + (config.mqtt.topicPrefix.endsWith('/') ? '' : '/');
-const gadRegExp = new RegExp((topicPrefix || 'knx/') + '(\\d+)\/(\\d+)\/(\\d+)\/(\\w+)(\/([\\w\\d]+))?');
+const influx = require('influx');
 const logger = createLogger({
   level: config.loglevel,
   format: format.combine(
@@ -32,90 +30,76 @@ const messageType = require('./messagetype.js').parse(config.messageType, logger
 
 let groupAddresses = ets.parse(config.knx.etsExport, logger) || {};
 
-let mqttClient  = mqtt.connect(config.mqtt.url, config.mqtt.options);
+const fields  = {}
 
-mqttClient.on('connect', function () {
-  logger.info('MQTT connected');
-  mqttClient.subscribe(topicPrefix + '+/+/+/+');
-  mqttClient.subscribe(topicPrefix + '+/+/+/+/+');
-});
+for (let key in groupAddresses) {
+    if (groupAddresses.hasOwnProperty(key)) {
+        // fields[groupAddresses[key].name] = influx.FieldType.FLOAT
+        if (groupAddresses[key].dpt === undefined) {
+            continue;
+        }
+        switch (groupAddresses[key].dpt.substring(0,4).toLowerCase()) {
+            case 'dpt1':
+                fields[groupAddresses[key].name] = influx.FieldType.BOOLEAN
+                break;
+            case 'dpt2':
+                fields[groupAddresses[key].name] = influx.FieldType.INTEGER
+                break;
+            case 'dpt3':
+                fields[groupAddresses[key].name] = influx.FieldType.INTEGER
+                break;
+            case 'dpt4':
+                fields[groupAddresses[key].name] = influx.FieldType.STRING
+                break;
+            case 'dpt5':
+                fields[groupAddresses[key].name] = influx.FieldType.INTEGER
+                break;
+            case 'dpt9':
+                fields[groupAddresses[key].name] = influx.FieldType.FLOAT
+                break;
+            case 'dpt10':
+                fields[groupAddresses[key].name] = influx.FieldType.FLOAT
+                break;
+            case 'dpt11':
+                fields[groupAddresses[key].name] = influx.FieldType.STRING
+                break;
+            case 'dpt20':
+                fields[groupAddresses[key].name] = influx.FieldType.INTEGER
+                break;
+            case 'dpt21':
+                fields[groupAddresses[key].name] = influx.FieldType.INTEGER
+                break;
+        }
+    }
+}
 
-mqttClient.on('message', function (topic, message) {
-    logger.silly('Received MQTT message on topic %s with value %s', topic, message);
-    let gadArray = gadRegExp.exec(topic);
-    let gad = gadArray[1] + "/" + gadArray[2] + "/" + gadArray[3];
-    let command = gadArray[4];
-    let dpt = gadArray.length >= 7 ? gadArray[6] : undefined;
-    let parsedMessage;
-    try {
-        parsedMessage = message === undefined ? null : JSON.parse(message.toString('utf8'));
-    } catch (err) {
-        parsedMessage = message.toString('utf8');
-    }
-    let isBuffer = parsedMessage !== null && typeof parsedMessage === 'object';
-    logger.verbose('Parsed MQTT message into gad %s with command %s, value %j and dpt %s', gad, command, parsedMessage, dpt);
-    if (command === 'write' && isBuffer) {
-        let bitLength = getBitLength(dpt);
-        let bufferMessage;
-        try {
-            bufferMessage = Buffer.from(parsedMessage.data);
-            knxConnection.writeRaw(gad, bufferMessage, bitLength);
-        } catch (err) {
-            logger.error('Could not parse buffer %j', parsedMessage);
+
+const influxConnection = new influx.InfluxDB({
+    host: config.influx.host,
+    database: config.influx.database,        
+    schema: [
+        {
+            measurement: config.influx.measurement,
+            fields: fields,
+            tags: [
+                'host'
+            ]
         }
-    } else if (command === 'write' && !isBuffer) {
-        if (groupAddresses.hasOwnProperty(gad)) {
-            try {
-                groupAddresses[gad].endpoint.write(parsedMessage);
-            } catch (err) {
-                logger.error('Could not write message %j to group address %s, err: %s', parsedMessage, gad, err);
-            }
-        } else {
-            logger.error('Cannot write non-buffer value do an unknown group address %s. Don\'t know how to convert', gad);
-        }
-    } else if (command === 'read') {
-        if (groupAddresses.hasOwnProperty(gad)) {
-            groupAddresses[gad].endpoint.read();
-        } else {
-            knxConnection.read(gad);
-        }
-    } else {
-        logger.warn('Unknown KNX command %s', command);
-    }
-});
+    ]
+    })
+
 
 let onKnxEvent = function (evt, dst, value, gad) {
     logger.silly("onKnxEvent %s, %s, %j", evt, dst, value);
     if (evt !== 'GroupValue_Write' && evt !== 'GroupValue_Response') {
         return;
     }
-
-    let isResponse = evt === 'GroupValue_Response';
-    let mqttMessage = value;
-    if (messageType === c.MESSAGE_TYPE_VALUE_ONLY) {
-        mqttMessage = !Buffer.isBuffer(value) ? String(value) : value
-    } else if (messageType === c.MESSAGE_TYPE_FULL) {
-        let mqttObject = { value }
-        if (gad !== undefined) {
-            mqttObject.name = gad.name;
-            mqttObject.unit = gad.unit;
+    influxConnection.writePoints([
+        {
+            measurement: config.influx.measurement,
+            fields: {[gad.name]: value }
         }
-        if (isResponse) {
-            mqttObject.response = true;
-        }
-        mqttMessage = JSON.stringify(mqttObject);
-    } else {
-        logger.error('Configured message type unknown. This should never happen and indicates a bug in the software.');
-        return;
-    }
-
-    logger.verbose("%s **** KNX EVENT: %s, dst: %s, value: %j",
-      new Date().toISOString().replace(/T/, ' ').replace(/\..+/, ''),
-      evt, dst, mqttMessage);
-
-    mqttClient.publish(topicPrefix + dst, mqttMessage, {
-        retain: config.mqtt.retain || false
-    });
+    ])
 }
 
 let knxConnection = knx.Connection(Object.assign({

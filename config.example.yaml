@@ -21,19 +21,8 @@ knx:
     # KNX physical address we'd like to use
     physAddr: '15.15.15'
 
-mqtt:
+influx:
   # URL to MQTT broker
-  url: 'mqtt://localhost'
-
-  # Configuration passed to the MQTT library
-  options:
-    # username: 'mqtt_username'
-    # password: 'mqtt_password'
-    # key: 'keyfile.key'
-    # cert: 'certificate.crt'
-    # ca: 'certificate-authority.crt'
-
-  # Prefix to MQTT topic
-  topicPrefix: 'knx'
-  # Set retain flag on messages
-  retain: false
+  host: 'influxdb'
+  database: 'knx'
+  measurement: 'knx'
